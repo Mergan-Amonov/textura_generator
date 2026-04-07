@@ -1,23 +1,30 @@
 # PBRForge::Core
 
-Mebel 3D modellari uchun lokal PBR texture generator.  
-Referens rasm yuklang → LLaVA AI tahlil → SDXL generatsiya → 6 professional PBR xarita.
+Lokal PBR texture generator — referens rasm yoki matn orqali 6 ta professional PBR xarita yaratadi.
+
+**Versiya:** v0.4  
+**Holat:** Prototip — asosiy pipeline ishlaydi, sifat yaxshilanishi kerak  
+**GitHub:** https://github.com/Mergan-Amonov/textura_generator
 
 ---
 
 ## Nima qiladi
 
-1. Referens rasm (mato, charm, yog'och, metall) yuklaysiz
-2. LLaVA vision AI material turini aniqlaydi va SDXL prompt yaratadi
-3. ComfyUI / SDXL 4K albedo generatsiya qiladi
-4. OpenCV 6 ta PBR xaritani avtomatik chiqaradi:
-   - **Color** — de-lit seamless albedo
-   - **NormalGL** — OpenGL format normal map
-   - **Height** — grayscale displacement map
-   - **Roughness** — roughness map
-   - **Metallic** — metallic map
-   - **AO** — ambient occlusion
-5. ZIP arxiv sifatida yuklab olasiz
+1. Foydalanuvchi chatda texture tavsifi yozadi yoki referens rasm yuklaydi
+2. LLaVA (vision AI) material turini aniqlaydi → SDXL prompt yaratadi
+3. ComfyUI / SDXL → 4K albedo generatsiya qiladi (img2img yoki txt2img)
+4. OpenCV pipeline 6 ta PBR xarita chiqaradi:
+
+| Xarita | Tavsif |
+|---|---|
+| **Color** | De-lit seamless albedo (baked lighting olib tashlanadi) |
+| **NormalGL** | OpenGL format normal map (Sobel + bilateral filter) |
+| **Height** | Multi-scale grayscale displacement map |
+| **Roughness** | CLAHE + gamma korreksiyali roughness map |
+| **Metallic** | HSV-based heuristic metallic mask |
+| **AO** | Multi-scale Gaussian diff ambient occlusion |
+
+5. ZIP arxiv sifatida yuklab olish
 
 ---
 
@@ -25,251 +32,244 @@ Referens rasm yuklang → LLaVA AI tahlil → SDXL generatsiya → 6 professiona
 
 | Komponent | Versiya | Izoh |
 |---|---|---|
-| Python | 3.10+ | Backend uchun |
-| Node.js | 18+ | Frontend uchun |
+| Python | 3.10+ | Backend |
+| Node.js | 18+ | Frontend |
 | ComfyUI | latest | `localhost:8188` da ishlab turishi kerak |
 | Ollama | latest | `localhost:11434` da ishlab turishi kerak |
-| GPU | 8GB+ VRAM | SDXL uchun tavsiya etiladi |
+| GPU | 8GB+ VRAM | SDXL uchun (minimum 6GB) |
 
-### Modellar
+### Kerakli modellar
 
-**SDXL checkpoint** — ComfyUI/models/checkpoints/ ga joylashtiring:
+**SDXL checkpoint** → `ComfyUI/models/checkpoints/`
 ```
 Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors
 ```
 
-**Ollama vision modeli** — terminalda bir marta ishlatiladi:
+**LLaVA vision modeli** (bir marta o'rnatiladi, ~4GB):
 ```bash
 ollama pull llava:7b
 ```
 
-**4K Upscale** (ixtiyoriy, bo'lmasa Lanczos bilan fallback) — ComfyUI/models/upscale_models/ ga:
+**LLM chat modeli** (ixtiyoriy, chat UI uchun, ~2GB):
+```bash
+ollama pull llama3.2
+```
+> Yo'q bo'lsa chat ishlaydi, lekin LLM o'rniga mahalliy `build_pbr_prompt_from_text` ishlatiladi.
+
+**4K Upscale modeli** (ixtiyoriy) → `ComfyUI/models/upscale_models/`
 ```
 4x_NMKD-Siax_200k.pth
 ```
-yoki
-```
-RealESRGAN_x4plus.pth
-```
+yoki `RealESRGAN_x4plus.pth`. Yo'q bo'lsa Lanczos bilan fallback qiladi.
 
 ---
 
-## O'rnatish va ishga tushirish
+## Ishga tushirish
 
 ### 1. ComfyUI va Ollama ni yoqing
 
 ```bash
-# ComfyUI
+# ComfyUI (alohida terminal)
 python ComfyUI/main.py
 
-# Ollama (alohida terminalda)
+# Ollama (alohida terminal)
 ollama serve
 ```
 
-### 2. PBRForge ni ishga tushiring
+### 2. PBRForge
 
 ```bash
-# Windows
+# Windows — bir tugma (avtomatik paket o'rnatadi)
 start.bat
+
+# Yoki qo'lda:
+cd backend && pip install -r requirements.txt && python main.py
+cd frontend && npm install && npm run dev
 ```
 
-`start.bat` avtomatik ravishda:
-- Python va Node.js paketlarni o'rnatadi (birinchi ishga tushirishda)
-- Backend (`localhost:8000`) va Frontend (`localhost:5173`) ni alohida oynalarda yoqadi
-- Brauzerda avtomatik ochadi
-
-### Qo'lda ishga tushirish
-
-```bash
-# Backend
-cd backend
-pip install -r requirements.txt
-python main.py
-
-# Frontend (alohida terminal)
-cd frontend
-npm install
-npm run dev
-```
+**Manzillar:**
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:8000
+- Swagger docs: http://localhost:8000/docs
+- ComfyUI: http://localhost:8188
 
 ---
 
-## Sozlamalar
+## Ishlatish
 
-`backend/.env` fayl yaratib o'zgartiring (`.env.example` asosida):
+### Variant 1 — Matn orqali
+1. Chat ga yozing: `"ko'k velvet mato"` yoki `"dark oak wood"`
+2. LLM prompt yaratadi → **Tayyor prompt** kartasi chiqadi
+3. **Generatsiya qilish** tugmasini bosing
 
-```env
-# SDXL model nomi (ComfyUI/models/checkpoints/ dagi fayl nomi)
-CHECKPOINT_NAME=Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors
+### Variant 2 — Referens rasm orqali (tavsiya etiladi)
+1. Chat inputi yonidagi 📎 tugmasini bosing
+2. Material/mebel rasmi yuklang (JPEG/PNG/WEBP, max 5MB)
+3. LLaVA avtomatik tahlil qiladi → prompt to'ldiriladi
+4. Prompt kartasida `img2img ✓` belgisi ko'rinadi
+5. **Generatsiya qilish** — referens rang/material saqlanadi
 
-# 4K Upscale modeli (ComfyUI/models/upscale_models/)
-UPSCALE_MODEL=4x_NMKD-Siax_200k.pth
-OUTPUT_RESOLUTION=4096
-
-# SDXL parametrlari
-DEFAULT_STEPS=35
-DEFAULT_CFG=7.0
-DEFAULT_SAMPLER=dpmpp_2m_sde
-DEFAULT_SCHEDULER=karras
-
-# Post-processing
-NORMAL_STRENGTH=4.0
-ROUGHNESS_GAMMA=1.2
-AO_BLUR_SIGMA=4.0
-SEAMLESS_BLEND_PX=64
-DELIT_SIGMA_PCT=0.10
-
-# Limitlar
-MAX_REF_IMAGE_MB=5
-MAX_REF_DIMENSION=1024
-JOB_TIMEOUT=600
-```
-
----
-
-## API
-
-Swagger UI: `http://localhost:8000/docs`
-
-### `POST /api/analyze`
-Referens rasmni LLaVA bilan tahlil qiladi va PBR prompt qaytaradi.
-
-```
-Request: multipart/form-data
-  image      — rasm fayli (JPEG/PNG/WEBP, max 5MB)
-  user_hint  — qo'shimcha izoh (ixtiyoriy)
-
-Response:
-  prompt      — tayyor SDXL prompt
-  negative    — negative prompt
-  category    — fabric | leather | wood | metal | general
-  use_img2img — img2img tavsiyasi
-  description — LLaVA xom tavsifi
-```
-
-### `POST /api/parts`
-Mebel rasmini tahlil qilib qismlarini aniqlaydi (oyoq, o'rindiq, suyanchiq...).
-
-```
-Request: multipart/form-data
-  image — rasm fayli
-
-Response:
-  parts — [{ part, material, category }, ...]
-```
-
-### `POST /api/generate`
-Yangi generatsiya boshlaydi, darhol `job_id` qaytaradi.
-
-```
-Request: multipart/form-data
-  prompt          — texture tavsifi (majburiy)
-  resolution      — 512 | 1024 | 2048 (default: 1024)
-  seed            — -1 = tasodifiy (default: -1)
-  use_img2img     — referens rasm ishlatilsinmi (default: false)
-  reference_image — referens rasm (use_img2img=true bo'lganda)
-
-Response:
-  job_id   — kuzatish uchun UUID
-  status   — "queued"
-  progress — 0
-```
-
-### `GET /api/status/{job_id}`
-Generatsiya holatini qaytaradi (har 1 soniyada so'rash mumkin).
-
-```
-Response:
-  status   — queued | generating | postprocessing | done | error
-  progress — 0..100
-  previews — { Color, NormalGL, Height, Roughness, Metallic, AO } base64 (done bo'lganda)
-  error    — xato matni yoki null
-```
-
-### `GET /api/download/{job_id}`
-Barcha 6 xaritani ZIP arxiv sifatida yuklab beradi.
-
-### `GET /api/comfyui-status`
-ComfyUI ulanish holati.
-
-### `GET /api/ollama-status`
-Ollama ulanish holati.
+### Sozlamalar (⚙️ tugmasi)
+- **O'lcham**: 512 / 1024 / 2048 px (ESRGAN bilan 4K ga upscale qilinadi)
+- **Seed**: -1 = tasodifiy, aniq son = takrorlanuvchi natija
 
 ---
 
 ## Arxitektura
 
 ```
-Foydalanuvchi (brauzer)
+Foydalanuvchi (brauzer localhost:5173)
         │
-        ▼
-React Frontend (localhost:5173)
-   SettingsPanel — rasm yuklash, AI tahlil, prompt, sozlamalar
-   Preview3D     — @react-three/fiber, 3D ko'rinish
-   ResultGallery — 6 xarita preview, ZIP yuklash
+        ├── Chat: "ko'k velvet" → POST /api/chat → Ollama llama3.2
+        │                                              → SDXL prompt + "PROMPT:" marker
         │
-        │ REST API
-        ▼
-FastAPI Backend (localhost:8000)
-   POST /api/analyze  → vision_service.py → Ollama LLaVA
-   POST /api/parts    → vision_service.py → Ollama LLaVA
-   POST /api/generate → BackgroundTask
-                            │
-                            ▼
-                     comfy_client.py
-                     POST /prompt → ComfyUI (localhost:8188)
-                     WebSocket    → progress kuzatish
-                     GET /history → albedo bytes yuklash
-                            │
-                            ▼
-                     image_processor.py (ProcessPoolExecutor)
-                     6 PBR xarita generatsiya (OpenCV)
-                            │
-                            ▼
-                     ZIP arxiv → /api/download/{job_id}
+        ├── Rasm: 📎 yuklash → POST /api/analyze → Ollama LLaVA
+        │                                              → material tavsifi + prompt
+        │
+        └── Generate → POST /api/generate (multipart)
+                              │
+                    ┌─────────▼─────────┐
+                    │  FastAPI Backend   │
+                    │  localhost:8000    │
+                    └─────────┬─────────┘
+                              │
+                    ┌─────────▼─────────┐
+                    │   comfy_client.py  │
+                    │                   │
+                    │  Referens rasm:   │
+                    │  _prepare_texture │
+                    │  _patch() →       │
+                    │  Laplacian window │
+                    │  → best patch     │
+                    │                   │
+                    │  img2img (0.82)   │
+                    │  yoki txt2img     │
+                    │                   │
+                    │  ComfyUI REST+WS  │
+                    │  localhost:8188   │
+                    │  SDXL → ESRGAN 4K │
+                    └─────────┬─────────┘
+                              │ albedo bytes (4096×4096)
+                    ┌─────────▼─────────┐
+                    │ image_processor.py │
+                    │ ProcessPoolExecutor│
+                    │                   │
+                    │ FFT Seamless      │
+                    │ (Moisan 2011)     │
+                    │ De-lit albedo     │
+                    │ 6 PBR xarita      │
+                    └─────────┬─────────┘
+                              │
+                    ZIP → GET /api/download/{job_id}
 ```
 
 ---
 
-## PBR xarita generatsiya algoritmlari
+## API endpointlar
 
-### Color (De-lit Albedo)
-Frequency separation texnikasi: AI generatsiya qilgan rasmda "baked" yoritish gradientini olib tashlaydi.
-- Katta sigma Gaussian blur → past chastotali yoritish ayrimi
-- Yuqori chastota (material detail) + o'rtacha rang → tozalangan albedo
+Swagger UI: `http://localhost:8000/docs`
 
-### Normal GL
-OpenGL format normal map (Sobel gradienti asosida).
-- Bilateral filter pre-processing (qirralarni saqlagan holda shovqin yo'qotiladi)
-- Sobel ksize=5 → Gx, Gy gradientlari
-- Vektor normalizatsiya (||v|| = 1)
-- Seamless blend → re-normalizatsiya (piksel buzilishini oldini oladi)
+### `POST /api/chat`
+Multi-turn LLM suhbat — texture tavsifidan SDXL prompt yaratadi.
+```json
+Request:  { "messages": [{"role": "user", "content": "ko'k velvet"}] }
+Response: { "success": true, "reply": "...", "prompt": "SDXL prompt yoki null" }
+```
+> `prompt` faqat LLM javobida `PROMPT:` markeri bo'lsa qaytadi.
 
-### Height
-Multi-scale displacement map.
-- Coarse (σ=8) × 0.25 — yirik balandlik tuzilmalari
-- Medium (σ=2) × 0.45 — o'rtacha bumps
-- Fine (raw) × 0.30 — mayda detallar
+### `POST /api/analyze`
+Referens rasmni LLaVA bilan tahlil qiladi.
+```
+Request: multipart — image (file), user_hint (string, ixtiyoriy)
+Response: { prompt, negative, category, description }
+  category: fabric | leather | wood | metal | general
+```
 
-### Roughness
-CLAHE lokal kontrast kuchaytirilgan roughness map.
-- Yorug' = silliq (low roughness), qorong'i = g'adir-budir (high roughness)
-- Gamma korreksiya (default 1.2)
+### `POST /api/enhance-prompt`
+Qisqa matnni SDXL prompt ga aylantiradi (Ollama text model yoki mahalliy fallback).
+```json
+Request:  { "user_text": "ko'k charm" }
+Response: { "prompt": "...", "fallback": false, "model_used": "llama3.2" }
+```
 
-### Metallic
-HSV-based heuristic: `metallic ≈ value^0.8 × (1 - saturation)^2`
-- Yuqori yorqinlik + past to'yinganlik → metall belgisi
-- Bilateral filter smoothing
+### `POST /api/generate`
+Generatsiya boshlaydi, darhol `job_id` qaytaradi.
+```
+Request: multipart
+  prompt          — SDXL prompt (majburiy)
+  resolution      — 512 | 1024 | 2048 (default: 1024)
+  seed            — -1 = tasodifiy
+  reference_image — fayl (bo'lsa img2img avtomatik yoqiladi)
 
-### AO (Ambient Occlusion)
-Multi-scale Gaussian difference.
-- 3 miqyos: σ×0.5, σ, σ×3
-- Pastki chegara 0.45 (juda qorong'i AO dan saqlaydi)
+Response: { job_id, status: "queued", progress: 0 }
+```
 
-### Seamless (barcha xaritalar)
-Offset-trick + smoothstep alpha blend.
-- Rasm yarmi o'rtaga siljitiladi, S-egri gradient bilan blend qilinadi
-- Normal xaritalarda: blend → vektor re-normalizatsiya (||v|| = 1 saqlanishi shart)
+### `GET /api/status/{job_id}`
+Progress polling (har 1 soniyada).
+```json
+{
+  "status": "queued | generating | postprocessing | done | error",
+  "progress": 0..100,
+  "previews": { "Color": "data:image/jpeg;base64,...", ... },
+  "error": null
+}
+```
+
+### `GET /api/download/{job_id}`
+6 xaritani ZIP sifatida yuklaydi.
+
+### `GET /api/comfyui-status` / `GET /api/ollama-status`
+Xizmat ulanish holati.
+
+---
+
+## Texnik detallar
+
+### img2img pipeline (referens rasm bilan)
+1. **Texture patch ajratish** (`_prepare_texture_patch`):
+   - Sliding window bilan Laplacian variance hisoblanadi
+   - Eng yuqori variance → eng teksturali mintaqa
+   - O'sha mintaqadan square crop → 1024×1024 resize
+2. ComfyUI ga yuklash → img2img denoise=**0.82**
+   - 0.65 → rasm deyarli o'zgarmaydi (mebel ko'rinishi qoladi)
+   - 0.82 → rang/material saqlanadi, shakl yo'qoladi
+   - 1.0 → txt2img bilan bir xil (referens e'tiborsiz)
+
+### FFT Seamless — Moisan (2011) Periodic Decomposition
+Eski usul (offset trick) seam ni markazga ko'chiradi — ko'rinadigan "xoch" artefakt qoladi.
+
+Yangi usul: `f = p + s` dekompozitsiyasi
+- `p` — periodic komponent (FFT orqali): chekkalarda matematik nolga teng farq
+- `s` — smooth komponent: vignette, gradient — olib tashlanadi
+- Natija: haqiqiy seamless, hech qanday artefakt yo'q
+
+```python
+# Har bir kanal uchun:
+v = boundary_discontinuity(u)          # chegaraviy farqlar
+denom = 2*(cos(wx) + cos(wy) - 2)     # eigenvalue matritsasi
+s = ifft2(fft2(v) / denom)            # smooth komponent
+p = u - s                              # periodic = original - smooth
+```
+
+Normal xaritalar uchun: FFT seamless + vektor re-normalizatsiya (`||v|| = 1`).
+
+### De-lit Albedo (Frequency Separation)
+AI generatsiya qilgan rasmda "baked" yoritish bor. Uni olib tashlash:
+```
+low_freq  = GaussianBlur(albedo, sigma = width × 10%)   # global yoritish
+high_freq = albedo - low_freq                            # material detail
+output    = mean_color + high_freq                       # tekis asos + detail
+```
+
+### SDXL sozlamalari
+```
+Steps:     35
+CFG:       7.0
+Sampler:   dpmpp_2m_sde
+Scheduler: karras
+Base:      1024×1024 (SDXL native)
+Output:    4096×4096 (ESRGAN 4x yoki Lanczos fallback)
+```
 
 ---
 
@@ -277,32 +277,71 @@ Offset-trick + smoothstep alpha blend.
 
 ```
 pbrforge/
-├── start.bat                        # Bir tugma bilan ishga tushirish (Windows)
-├── TZ.md                            # Texnik spetsifikatsiya
+├── start.bat                    # Windows — bir tugma ishga tushirish
+├── TZ.md                        # Dastlabki texnik spetsifikatsiya (v1.1)
 │
 ├── backend/
-│   ├── main.py                      # FastAPI app, ProcessPoolExecutor
-│   ├── config.py                    # Barcha sozlamalar (.env orqali)
+│   ├── main.py                  # FastAPI app, ProcessPoolExecutor (max_workers=2)
+│   ├── config.py                # Barcha sozlamalar (.env orqali override)
 │   ├── requirements.txt
-│   ├── jobs/                        # Generatsiya ZIP arxivlari (vaqtinchalik)
+│   ├── jobs/                    # Vaqtinchalik ZIP arxivlar (TTL: 1 soat)
 │   ├── routers/
-│   │   └── generate.py              # Barcha API endpointlar
+│   │   └── generate.py          # Barcha REST endpointlar
 │   └── services/
-│       ├── vision_service.py        # Ollama LLaVA integratsiya
-│       ├── prompt_builder.py        # PBR prompt generatsiya
-│       ├── comfy_client.py          # ComfyUI REST + WebSocket
-│       └── image_processor.py       # OpenCV 6-map post-processing
+│       ├── vision_service.py    # Ollama: LLaVA tahlil + LLM chat + enhance
+│       ├── prompt_builder.py    # PBR prompt generatsiya (material kategoriyalar)
+│       ├── comfy_client.py      # ComfyUI REST+WebSocket, img2img/txt2img workflow
+│       └── image_processor.py  # OpenCV: FFT seamless + 6 PBR xarita
 │
 └── frontend/
     └── src/
-        ├── App.jsx
-        ├── main.jsx
+        ├── App.jsx              # 2-ustun layout, polling logic
         ├── store/
-        │   └── useStore.js          # Zustand global state
+        │   └── useStore.js      # Zustand: status, progress, previews, analyzing
         └── components/
-            ├── SettingsPanel.jsx    # Chap panel: rasm yuklash, AI tahlil, sozlamalar
-            ├── Preview3D.jsx        # Markaziy: Three.js 3D ko'rinish
-            └── ResultGallery.jsx    # O'ng panel: 6 xarita gallery, ZIP yuklash
+            ├── SettingsPanel.jsx  # Chat UI, rasm yuklash, generatsiya
+            ├── Preview3D.jsx      # Three.js sphere (qoldirilgan, ishlatilmaydi)
+            └── ResultGallery.jsx  # 6 xarita 3×2 grid, progress bar, ZIP
+```
+
+---
+
+## Konfiguratsiya (.env)
+
+```env
+# ComfyUI
+COMFYUI_HOST=127.0.0.1
+COMFYUI_PORT=8188
+
+# SDXL modeli
+CHECKPOINT_NAME=Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors
+
+# 4K Upscale
+UPSCALE_MODEL=4x_NMKD-Siax_200k.pth
+OUTPUT_RESOLUTION=4096
+
+# Generatsiya
+DEFAULT_STEPS=35
+DEFAULT_CFG=7.0
+DEFAULT_SAMPLER=dpmpp_2m_sde
+DEFAULT_SCHEDULER=karras
+
+# Post-processing
+NORMAL_STRENGTH=4.0       # Normal map keskinligi
+ROUGHNESS_GAMMA=1.2       # Roughness gamma korreksiya
+AO_BLUR_SIGMA=4.0         # AO blur kuchi
+SEAMLESS_BLEND_PX=64      # FFT uchun ishlatilmaydi (eski offset trick uchun)
+DELIT_SIGMA_PCT=0.10      # De-lit sigma (rasm kengligi × 10%)
+
+# Limitlar
+MAX_REF_IMAGE_MB=5
+MAX_REF_DIMENSION=1024    # Referens rasm maksimal o'lchami
+JOB_TIMEOUT=600           # 10 daqiqa
+JOB_TTL=3600              # Job saqlash muddati (1 soat)
+
+# API server
+API_HOST=0.0.0.0
+API_PORT=8000
 ```
 
 ---
@@ -311,39 +350,74 @@ pbrforge/
 
 **Ollama ishlamayapti**
 ```
-detail: "Ollama ishga tushirilmagan. Terminal: ollama serve"
+"Ollama ishga tushirilmagan. Terminal: ollama serve"
 ```
-→ Terminalda `ollama serve` ishga tushiring.
+→ `ollama serve` buyrug'ini ishga tushiring.
 
-**LLaVA model topilmadi**
+**LLaVA model yo'q**
 ```
-detail: "LLaVA model o'rnatilmagan. Terminal: ollama pull llava:7b"
+"LLaVA model o'rnatilmagan. Terminal: ollama pull llava:7b"
 ```
-→ `ollama pull llava:7b` buyrug'ini ishga tushiring (bir marta, ~4GB).
+→ `ollama pull llava:7b` (~4GB, bir marta).
+
+**Chat ishlaydi lekin LLM yo'q**
+```
+{ "fallback": true }
+```
+→ `ollama pull llama3.2` o'rnating. Hozircha mahalliy prompt builder ishlatiladi.
 
 **ComfyUI ishlamayapti**
-```
-detail: "ComfyUI ishga tushirilmagan."
-```
 → `python ComfyUI/main.py` ni ishga tushiring.
 
-**Checkpoint topilmadi (ComfyUI xatosi)**  
-→ `config.py` yoki `.env` dagi `CHECKPOINT_NAME` ni ComfyUI/models/checkpoints/ dagi fayl nomi bilan moslashtiring.
+**Checkpoint topilmadi**
+→ `.env` dagi `CHECKPOINT_NAME` ni ComfyUI/models/checkpoints/ dagi fayl nomi bilan moslashtiring.
 
-**4K sifatsiz (Lanczos)**  
-→ `4x_NMKD-Siax_200k.pth` yoki `RealESRGAN_x4plus.pth` ni ComfyUI/models/upscale_models/ ga joylang.
+**4K sifatsiz (Lanczos fallback)**
+→ `4x_NMKD-Siax_200k.pth` ni ComfyUI/models/upscale_models/ ga joylang.
+
+**img2img ishlaydi lekin natija o'xshamaydi**
+→ `comfy_client.py` da `denoise` qiymatini kamaytiring (0.82 → 0.70).
+   Kichik denoise = referensga yaqinroq, lekin mebel shakli qolishi mumkin.
+
+**ProcessPoolExecutor xatosi**
+→ `backend/jobs/` papkasi mavjudligini tekshiring. Yo'q bo'lsa yarating.
+
+---
+
+## Versiya tarixi
+
+| Versiya | O'zgarishlar |
+|---|---|
+| v0.1 | Dastlabki TZ, SD 1.5 + basic post-processing |
+| v0.2 | FastAPI backend, ProcessPoolExecutor, CORS, polling |
+| v0.3 | SDXL ga o'tish, LLaVA vision, prompt_builder, mebel qismlari aniqlash |
+| v0.4 | Chat UI (LLM multi-turn), FFT seamless (Moisan), img2img auto, texture patch extraction, 2-ustun layout |
 
 ---
 
 ## Texnologiyalar
 
-| | |
+| Qatlam | Texnologiya |
 |---|---|
-| **Backend** | FastAPI, Uvicorn, Python 3.10+ |
-| **Image processing** | OpenCV 4.9, NumPy 1.26 |
-| **HTTP / WS client** | httpx, websockets |
-| **Frontend** | React 18, Vite, Tailwind CSS |
-| **3D** | @react-three/fiber, @react-three/drei |
-| **State** | Zustand |
-| **AI generatsiya** | ComfyUI, SDXL (Juggernaut XL) |
-| **Vision AI** | Ollama, LLaVA 7B |
+| Backend | FastAPI, Uvicorn, Python 3.10+ |
+| Image processing | OpenCV 4.9, NumPy 1.26 |
+| HTTP / WebSocket | httpx, websockets |
+| Frontend | React 18, Vite, Tailwind CSS |
+| State management | Zustand |
+| AI generatsiya | ComfyUI, SDXL (Juggernaut XL v9) |
+| Vision AI | Ollama, LLaVA 7B |
+| LLM chat | Ollama, llama3.2 (yoki boshqa text model) |
+| 4K Upscale | ESRGAN (4x_NMKD-Siax_200k) |
+
+---
+
+## Kelajakda yaxshilash mumkin bo'lgan joylar
+
+- **Texture sifati**: SDXL texture LoRA qo'shish (masalan, `textures-and-patterns-sdxl`)
+- **ControlNet**: Strukturani saqlab rang/material o'zgartirish
+- **Batch generatsiya**: Bir vaqtda bir nechta texture
+- **Preset materiallar**: Velvet, charm, yog'och — bir bosishda tayyor prompt
+- **Negative prompt UI**: Foydalanuvchi o'zi boshqarsin
+- **History**: Avvalgi generatsiyalarni saqlash va ko'rish
+- **Export formats**: PNG, EXR, sRGB/Linear konversiya
+- **Linux/Mac**: `start.bat` o'rniga cross-platform skript
