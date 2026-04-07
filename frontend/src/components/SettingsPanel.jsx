@@ -16,8 +16,10 @@ export default function SettingsPanel() {
   const [refPreview, setRefPreview] = useState(null)
   const [fileError, setFileError]   = useState('')
   const [useImg2Img, setUseImg2Img] = useState(false)
-  const [category, setCategory]     = useState(null)   // fabric | leather | wood | metal | general
-  const [visionDesc, setVisionDesc] = useState('')     // LLaVA xom tavsifi
+  const [category, setCategory]     = useState(null)
+  const [visionDesc, setVisionDesc] = useState('')
+  const [parts, setParts]           = useState([])      // mebel qismlari
+  const [partsLoading, setPartsLoading] = useState(false)
   const fileInputRef = useRef(null)
 
   const handleFileChange = (e) => {
@@ -114,7 +116,41 @@ export default function SettingsPanel() {
     setUseImg2Img(false)
     setCategory(null)
     setVisionDesc('')
+    setParts([])
     if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const handleDetectParts = async () => {
+    if (!refFile || partsLoading) return
+    setPartsLoading(true)
+    setParts([])
+    try {
+      const formData = new FormData()
+      formData.append('image', refFile)
+      const { data } = await axios.post('/api/parts', formData)
+      setParts(data.parts || [])
+    } catch (err) {
+      console.error('Parts xato:', err)
+    } finally {
+      setPartsLoading(false)
+    }
+  }
+
+  const handleSelectPart = async (part) => {
+    // Qismni tanlash → o'sha material uchun tahlil va prompt generatsiya
+    setAnalyzing(true)
+    try {
+      const formData = new FormData()
+      formData.append('image', refFile)
+      formData.append('user_hint', part.material)
+      const { data } = await axios.post('/api/analyze', formData)
+      setPrompt(data.prompt)
+      setCategory(data.category)
+      setVisionDesc(`${part.part}: ${part.material}`)
+      setAnalyzing(false)
+    } catch (err) {
+      setAnalyzeError('Tahlil xatosi')
+    }
   }
 
   const categoryLabel = {
@@ -236,6 +272,71 @@ export default function SettingsPanel() {
           </div>
         )}
 
+        {/* Mebel qismlari */}
+        {refFile && (
+          <div className="flex flex-col gap-1.5">
+            <button
+              type="button"
+              onClick={handleDetectParts}
+              disabled={partsLoading || isGenerating}
+              className="w-full py-2 bg-violet-700 hover:bg-violet-600 text-white text-sm
+                         font-medium rounded-lg transition-colors
+                         disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {partsLoading ? (
+                <>
+                  <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                  </svg>
+                  Qismlar aniqlanmoqda...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M4 6h16M4 12h8m-8 6h16" />
+                  </svg>
+                  Mebel qismlarini aniqlash
+                </>
+              )}
+            </button>
+
+            {parts.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">
+                  Topilgan qismlar — bosib tekstura oling
+                </p>
+                {parts.map((p, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => handleSelectPart(p)}
+                    disabled={analyzing || isGenerating}
+                    className="flex items-center justify-between w-full px-3 py-2
+                               bg-surface border border-border hover:border-accent
+                               rounded-lg text-left transition-colors
+                               disabled:opacity-50 disabled:cursor-not-allowed group"
+                  >
+                    <div className="flex flex-col">
+                      <span className="text-sm text-white font-medium capitalize">{p.part}</span>
+                      <span className="text-xs text-gray-400">{p.material}</span>
+                    </div>
+                    <span className={`text-xs px-2 py-0.5 rounded font-medium
+                      ${p.category === 'fabric'  ? 'bg-blue-900 text-blue-300' :
+                        p.category === 'leather' ? 'bg-amber-900 text-amber-300' :
+                        p.category === 'wood'    ? 'bg-orange-900 text-orange-300' :
+                        p.category === 'metal'   ? 'bg-slate-700 text-slate-300' :
+                                                   'bg-gray-700 text-gray-300'}`}>
+                      {p.category}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Img2Img toggle */}
         {refFile && (
           <label className="flex items-center gap-2.5 cursor-pointer select-none">
@@ -250,7 +351,7 @@ export default function SettingsPanel() {
             </div>
             <span className="text-xs text-gray-300">
               Img2Img ishlatish
-              <span className="text-gray-500 ml-1">(rang/pattern saqlanadi)</span>
+              <span className="text-gray-500 ml-1">(faqat tekstura closeup uchun)</span>
             </span>
           </label>
         )}

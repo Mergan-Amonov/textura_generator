@@ -112,6 +112,6 @@ if __name__ == "__main__":
         "main:app",
         host      = API_HOST,
         port      = API_PORT,
-        reload    = True,
+        reload    = False,
         log_level = "info",
     )

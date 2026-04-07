@@ -62,7 +62,11 @@ async def get_comfyui_upscale_models() -> list[str]:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(f"{COMFYUI_URL}/object_info/UpscaleModelLoader")
             data = r.json()
-            return data["UpscaleModelLoader"]["input"]["required"]["model_name"][0]
+            result = data["UpscaleModelLoader"]["input"]["required"]["model_name"][0]
+            # list bo'lishi kerak — string kelsa bo'sh qaytaramiz
+            if not isinstance(result, list):
+                return []
+            return result
     except Exception:
         return []
 

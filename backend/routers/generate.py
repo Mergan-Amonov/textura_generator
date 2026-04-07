@@ -35,7 +35,7 @@ from config import (
 )
 from services.comfy_client import is_comfyui_running, get_comfyui_models, generate_albedo
 from services.image_processor import process_all_maps, maps_to_previews
-from services.vision_service import is_ollama_running, analyze_image_with_llava
+from services.vision_service import is_ollama_running, analyze_image_with_llava, analyze_furniture_parts
 from services.prompt_builder import build_pbr_prompt, build_pbr_prompt_from_text
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,18 @@ class AnalyzeResponse(BaseModel):
     use_img2img: bool
     description: str           # LLaVA xom tavsifi
     error:       Optional[str] = None
+
+
+class FurniturePart(BaseModel):
+    part:     str              # "legs", "seat cushion", ...
+    material: str              # "oak wood grain", "gray velvet fabric", ...
+    category: str              # fabric | leather | wood | metal | ...
+
+
+class PartsResponse(BaseModel):
+    success: bool
+    parts:   list[FurniturePart]
+    error:   Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -273,6 +285,37 @@ async def analyze_image(
         category    = pbr["category"],
         use_img2img = pbr["use_img2img"],
         description = vision_result["description"],
+    )
+
+
+@router.post("/parts", response_model=PartsResponse)
+async def detect_furniture_parts(
+    image: UploadFile = File(...),
+):
+    """
+    Mebel rasmini tahlil qilib qismlarini va materiallarini qaytaradi.
+    Foydalanuvchi har bir qismni bosib tekstura generatsiya qila oladi.
+    """
+    if not await is_ollama_running():
+        raise HTTPException(
+            status_code=503,
+            detail="Ollama ishga tushirilmagan. Terminal: ollama serve",
+        )
+
+    raw = await image.read()
+    image_bytes = _validate_image(raw, image.content_type or "")
+
+    result = await analyze_furniture_parts(image_bytes)
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=500,
+            detail=result["error"] or "Qismlarni aniqlashda xato",
+        )
+
+    return PartsResponse(
+        success = True,
+        parts   = [FurniturePart(**p) for p in result["parts"]],
     )
 
 

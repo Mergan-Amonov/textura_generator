@@ -19,17 +19,20 @@ logger = logging.getLogger(__name__)
 
 # ── PBR suffix — barcha texturalar uchun majburiy ────────────────────────────
 PBR_SUFFIX = (
-    "seamless tileable texture, pbr albedo map, "
-    "flat studio lighting, no shadows, no highlights, "
-    "photorealistic material, 4k resolution"
+    "macro closeup texture photography, filling entire frame, "
+    "seamless tileable surface material, pbr albedo map, "
+    "flat evenly lit, no shadows, no shading, no highlights, "
+    "no objects, no furniture, no background, only pure texture, 4k"
 )
 
 # ── Negative prompt — SDXL uchun ─────────────────────────────────────────────
 PBR_NEGATIVE = (
-    "furniture, sofa, chair, table, room, background, person, "
-    "3d render, painting, illustration, cartoon, blurry, "
-    "low quality, watermark, signature, text, logo, "
-    "strong shadows, harsh lighting, vignette"
+    "sofa, couch, chair, table, cushion, pillow, furniture, room, interior, "
+    "wall, floor, ceiling, window, person, hands, body, "
+    "3d render, cgi, painting, illustration, cartoon, anime, "
+    "blurry, low quality, watermark, signature, text, logo, "
+    "depth of field, bokeh, vignette, perspective, wide angle, "
+    "object, product, scene, environment, background"
 )
 
 # ── Material kategoriya aniqlash ──────────────────────────────────────────────
@@ -90,10 +93,21 @@ def _category_suffix(category: str) -> str:
     return suffixes.get(category, suffixes["general"])
 
 
+# Mebel va ob'ekt so'zlari — promptdan olib tashlanadi
+_FURNITURE_PHRASES = re.compile(
+    r'\b(on (a |an |the )?(sofa|couch|chair|cushion|pillow|seat|armrest|furniture|'
+    r'upholstery|fabric panel|surface of|back of|side of)|'
+    r'(sofa|couch|chair|cushion|pillow|furniture|upholstery|armchair|ottoman) '
+    r'(cover|fabric|material|texture|surface)|'
+    r'of (a |an |the )?(sofa|couch|chair|cushion|pillow|furniture))\b',
+    re.IGNORECASE
+)
+
+
 def _clean_description(description: str) -> str:
     """
     Vision tavsifini promptga mos holga keltiradi.
-    - Ortiqcha gap/so'zlarni olib tashlaydi
+    - Mebel/ob'ekt so'zlarini olib tashlaydi
     - Birinchi gapni oladi (eng muhim tavsif)
     """
     # Birinchi gapni ol
@@ -107,7 +121,13 @@ def _clean_description(description: str) -> str:
         '', first, flags=re.IGNORECASE
     ).strip()
 
-    # Bosh harf kichiklashtirish (prompt uchun yaxshiroq)
+    # Mebel iboralarini olib tashlash
+    first = _FURNITURE_PHRASES.sub('', first).strip()
+    # Ortiqcha vergul va bo'shliqlarni tozalash
+    first = re.sub(r',\s*,', ',', first)
+    first = re.sub(r'\s+', ' ', first).strip(' ,')
+
+    # Bosh harf kichiklashtirish
     if first and first[0].isupper():
         first = first[0].lower() + first[1:]
 
@@ -145,8 +165,9 @@ def build_pbr_prompt(
 
     prompt = ", ".join(p for p in parts if p)
 
-    # img2img: mato va charm uchun tavsiya etiladi (rang/pattern muhim)
-    use_img2img = category in ("fabric", "leather")
+    # img2img: HECH QACHON furniture foto bilan ishlatilmaydi.
+    # Faqat foydalanuvchi o'zi yoqsa (frontend toggle) ishlaydi.
+    use_img2img = False
 
     logger.info(
         f"Prompt qurildi | category={category} | img2img={use_img2img}\n"

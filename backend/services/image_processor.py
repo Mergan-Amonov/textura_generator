@@ -23,22 +23,23 @@ import base64
 #  Seamless helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _linear_gradient(size: int, blend: int):
+def _smoothstep_gradient(size: int, blend: int):
     import numpy as np
     g = np.ones(size, dtype=np.float32)
     b = min(blend, size // 2)
-    ramp = np.linspace(0.0, 1.0, b, endpoint=False)
+    t = np.linspace(0.0, 1.0, b, endpoint=False)
+    ramp = t * t * (3.0 - 2.0 * t)   # smoothstep: S-egri, linear emas
     g[:b] = ramp
     g[size - b:] = ramp[::-1]
     return g
 
 
 def _make_seamless(img_bgr, blend_px: int):
-    """Offset trick + alpha blend (BGR uint8)."""
+    """Offset trick + smoothstep alpha blend (BGR uint8)."""
     import numpy as np
     h, w = img_bgr.shape[:2]
     shifted = np.roll(np.roll(img_bgr, h // 2, axis=0), w // 2, axis=1)
-    mask = np.outer(_linear_gradient(h, blend_px), _linear_gradient(w, blend_px))
+    mask = np.outer(_smoothstep_gradient(h, blend_px), _smoothstep_gradient(w, blend_px))
     mask = mask[:, :, np.newaxis].astype(np.float32)
     blended = img_bgr.astype(np.float32) * mask + shifted.astype(np.float32) * (1.0 - mask)
     return blended.clip(0, 255).astype(np.uint8)
@@ -256,7 +257,7 @@ def process_all_maps(
     normal_strength: float = 4.0,
     roughness_gamma: float = 1.2,
     ao_blur_sigma: float   = 4.0,
-    seamless_blend_px: int = 64,
+    seamless_blend_px: int = 512,
     delit_sigma_pct: float = 0.10,
 ) -> dict[str, bytes]:
     """
