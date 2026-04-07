@@ -35,7 +35,7 @@ from config import (
 )
 from services.comfy_client import is_comfyui_running, get_comfyui_models, generate_albedo
 from services.image_processor import process_all_maps, maps_to_previews
-from services.vision_service import is_ollama_running, analyze_image_with_llava, analyze_furniture_parts
+from services.vision_service import is_ollama_running, analyze_image_with_llava, enhance_prompt_with_llm, chat_with_llm
 from services.prompt_builder import build_pbr_prompt, build_pbr_prompt_from_text
 
 logger = logging.getLogger(__name__)
@@ -69,16 +69,33 @@ class AnalyzeResponse(BaseModel):
     error:       Optional[str] = None
 
 
-class FurniturePart(BaseModel):
-    part:     str              # "legs", "seat cushion", ...
-    material: str              # "oak wood grain", "gray velvet fabric", ...
-    category: str              # fabric | leather | wood | metal | ...
+class EnhancePromptRequest(BaseModel):
+    user_text: str
 
 
-class PartsResponse(BaseModel):
-    success: bool
-    parts:   list[FurniturePart]
-    error:   Optional[str] = None
+class EnhancePromptResponse(BaseModel):
+    success:    bool
+    prompt:     str
+    model_used: Optional[str] = None
+    fallback:   bool = False
+    error:      Optional[str] = None
+
+
+class ChatMessage(BaseModel):
+    role:    str   # "user" | "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: list[ChatMessage]
+
+
+class ChatResponse(BaseModel):
+    success:    bool
+    reply:      str
+    prompt:     Optional[str] = None   # SDXL prompt, agar tayyor bo'lsa
+    model_used: Optional[str] = None
+    error:      Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -288,34 +305,40 @@ async def analyze_image(
     )
 
 
-@router.post("/parts", response_model=PartsResponse)
-async def detect_furniture_parts(
-    image: UploadFile = File(...),
-):
+@router.post("/chat", response_model=ChatResponse)
+async def chat_endpoint(body: ChatRequest):
     """
-    Mebel rasmini tahlil qilib qismlarini va materiallarini qaytaradi.
-    Foydalanuvchi har bir qismni bosib tekstura generatsiya qila oladi.
+    LLM bilan multi-turn suhbat — texture tavsifidan SDXL prompt yaratadi.
+    LLM javobida PROMPT: bo'lsa, u ajratib qaytariladi.
     """
-    if not await is_ollama_running():
-        raise HTTPException(
-            status_code=503,
-            detail="Ollama ishga tushirilmagan. Terminal: ollama serve",
-        )
+    messages = [{"role": m.role, "content": m.content} for m in body.messages]
+    result = await chat_with_llm(messages)
+    return ChatResponse(
+        success    = result["success"],
+        reply      = result["reply"],
+        prompt     = result.get("prompt"),
+        model_used = result.get("model_used"),
+        error      = result.get("error"),
+    )
 
-    raw = await image.read()
-    image_bytes = _validate_image(raw, image.content_type or "")
 
-    result = await analyze_furniture_parts(image_bytes)
+@router.post("/enhance-prompt", response_model=EnhancePromptResponse)
+async def enhance_prompt_endpoint(body: EnhancePromptRequest):
+    """
+    Foydalanuvchi qisqa matni → to'liq SDXL PBR texture prompt.
+    Ollama text modeli ishlatiladi; model bo'lmasa mahalliy fallback.
+    """
+    text = body.user_text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Matn bo'sh bo'lmasligi kerak")
 
-    if not result["success"]:
-        raise HTTPException(
-            status_code=500,
-            detail=result["error"] or "Qismlarni aniqlashda xato",
-        )
-
-    return PartsResponse(
-        success = True,
-        parts   = [FurniturePart(**p) for p in result["parts"]],
+    result = await enhance_prompt_with_llm(text)
+    return EnhancePromptResponse(
+        success    = result["success"],
+        prompt     = result["prompt"],
+        model_used = result.get("model_used"),
+        fallback   = result.get("fallback", False),
+        error      = result.get("error"),
     )
 
 
@@ -353,9 +376,10 @@ async def start_generate(
         raw = await reference_image.read()
         reference_bytes = _validate_image(raw, reference_image.content_type or "")
 
-    # img2img faqat referens rasm bo'lganda ishlaydi
-    if use_img2img and not reference_bytes:
-        use_img2img = False
+    # Referens rasm bo'lsa — img2img avtomatik yoqiladi
+    # (foydalanuvchi toggle qilishiga hojat yo'q)
+    if reference_bytes:
+        use_img2img = True
 
     # Material nomi promptdan
     words = prompt.replace(",", "").split()[:3]

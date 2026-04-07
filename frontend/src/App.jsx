@@ -2,7 +2,6 @@ import { useEffect, useRef } from 'react'
 import axios from 'axios'
 import { useStore } from './store/useStore'
 import SettingsPanel from './components/SettingsPanel'
-import Preview3D from './components/Preview3D'
 import ResultGallery from './components/ResultGallery'
 
 const POLL_INTERVAL_MS = 1000
@@ -11,7 +10,6 @@ export default function App() {
   const { jobId, status, applyStatus } = useStore()
   const timerRef = useRef(null)
 
-  // Polling: har 1 soniyada status tekshirish
   useEffect(() => {
     const isActive = jobId && status !== 'done' && status !== 'error' && status !== 'idle'
 
@@ -24,7 +22,7 @@ export default function App() {
       try {
         const { data } = await axios.get(`/api/status/${jobId}`)
         applyStatus(data)
-      } catch (err) {
+      } catch {
         applyStatus({ status: 'error', progress: 0, error: 'Server bilan ulanishda xato' })
       }
     }, POLL_INTERVAL_MS)
@@ -39,15 +37,10 @@ export default function App() {
         <SettingsPanel />
       </aside>
 
-      {/* Markaziy ustun — 3D Preview */}
-      <main className="flex-1 flex flex-col min-w-0">
-        <Preview3D />
-      </main>
-
-      {/* O'ng ustun — Natijalar */}
-      <aside className="w-80 flex-shrink-0 flex flex-col border-l border-border overflow-y-auto">
+      {/* O'ng — Natijalar */}
+      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto">
         <ResultGallery />
-      </aside>
+      </main>
     </div>
   )
 }

@@ -20,36 +20,77 @@ import base64
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Seamless helpers
+#  Seamless — Moisan (2011) Periodic-Smooth Decomposition
+# ──────────────────────────────────────────────────────────────────────────────
+#
+#  f = p + s  (p — periodic, s — smooth)
+#  p  — FFT orqali hisoblangan periodic komponent.
+#       Chap/o'ng va yuqori/pastki chegaralarda NOLGA teng farq — haqiqiy seamless.
+#  s  — Chekka artefaktlar (lightning gradient, vignette) — olib tashlanadi.
+#
+#  Offset trick (eski usul) — seam ni markazga ko'chiradi, lekin yo'q qilmaydi.
+#  Bu usul seam ni BUTUNLAY yo'q qiladi.
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _smoothstep_gradient(size: int, blend: int):
+def _periodic_decompose_channel(u: "np.ndarray") -> "np.ndarray":
+    """
+    Bir kanal (float32, 2D) uchun Moisan periodic komponentini hisoblaydi.
+    """
     import numpy as np
-    g = np.ones(size, dtype=np.float32)
-    b = min(blend, size // 2)
-    t = np.linspace(0.0, 1.0, b, endpoint=False)
-    ramp = t * t * (3.0 - 2.0 * t)   # smoothstep: S-egri, linear emas
-    g[:b] = ramp
-    g[size - b:] = ramp[::-1]
-    return g
+    h, w = u.shape
+
+    # Chekka farqlar (boundary discontinuity vektori)
+    v = np.zeros((h, w), dtype=np.float32)
+    v[0,  :] += u[0, :]  - u[-1, :]
+    v[-1, :] += u[-1, :] - u[0,  :]
+    v[:,  0] += u[:,  0] - u[:, -1]
+    v[:, -1] += u[:, -1] - u[:,  0]
+
+    # Chastota domeni eigenvalue matritsasi
+    fx = np.fft.fftfreq(w) * (2.0 * np.pi)
+    fy = np.fft.fftfreq(h) * (2.0 * np.pi)
+    wx, wy = np.meshgrid(fx, fy)
+    denom = 2.0 * (np.cos(wx) + np.cos(wy) - 2.0)
+    denom[0, 0] = 1.0   # DC komponent — division by zero
+
+    # Smooth komponentni chastota domenida hisoblash
+    v_hat = np.fft.rfft2(v)
+    # rfft2 uchun denom ni qisqartirish
+    denom_r = denom[:, : w // 2 + 1]
+    s_hat = v_hat / denom_r
+    s_hat[0, 0] = 0.0   # DC = 0 (o'rtacha qiymat o'zgarmaydi)
+
+    s = np.fft.irfft2(s_hat, s=(h, w))
+
+    # Periodic komponent = original − smooth
+    return (u - s).astype(np.float32)
 
 
-def _make_seamless(img_bgr, blend_px: int):
-    """Offset trick + smoothstep alpha blend (BGR uint8)."""
+def _make_seamless_fft(img_bgr: "np.ndarray") -> "np.ndarray":
+    """
+    BGR uint8 rasmni Moisan FFT usuli bilan seamless qiladi.
+    Offset trick dan farqli: hech qanday ko'rinadigan seam qolmaydi.
+    """
     import numpy as np
-    h, w = img_bgr.shape[:2]
-    shifted = np.roll(np.roll(img_bgr, h // 2, axis=0), w // 2, axis=1)
-    mask = np.outer(_smoothstep_gradient(h, blend_px), _smoothstep_gradient(w, blend_px))
-    mask = mask[:, :, np.newaxis].astype(np.float32)
-    blended = img_bgr.astype(np.float32) * mask + shifted.astype(np.float32) * (1.0 - mask)
-    return blended.clip(0, 255).astype(np.uint8)
+    img_f = img_bgr.astype(np.float32)
+    result = np.zeros_like(img_f)
+    for c in range(3):
+        result[:, :, c] = _periodic_decompose_channel(img_f[:, :, c])
+    return np.clip(result, 0.0, 255.0).astype(np.uint8)
 
 
-def _make_seamless_normal(normal_bgr, blend_px: int):
-    """Seamless + vektor re-normalizatsiya (||v|| = 1 saqlanadi)."""
+def _make_seamless_fft_gray(img_gray: "np.ndarray") -> "np.ndarray":
+    """Grayscale uint8 rasm uchun FFT seamless."""
     import numpy as np
-    blended = _make_seamless(normal_bgr, blend_px)
-    n  = blended.astype(np.float32) / 255.0 * 2.0 - 1.0
+    p = _periodic_decompose_channel(img_gray.astype(np.float32))
+    return np.clip(p, 0.0, 255.0).astype(np.uint8)
+
+
+def _make_seamless_fft_normal(normal_bgr: "np.ndarray") -> "np.ndarray":
+    """Normal map uchun FFT seamless + vektor re-normalizatsiya."""
+    import numpy as np
+    seamless = _make_seamless_fft(normal_bgr)
+    n  = seamless.astype(np.float32) / 255.0 * 2.0 - 1.0
     nx = n[:, :, 2]   # R = X
     ny = n[:, :, 1]   # G = Y
     nz = n[:, :, 0]   # B = Z
@@ -57,13 +98,6 @@ def _make_seamless_normal(normal_bgr, blend_px: int):
     nx, ny, nz = nx / length, ny / length, nz / length
     out = np.stack([nz * 0.5 + 0.5, ny * 0.5 + 0.5, nx * 0.5 + 0.5], axis=-1)
     return (np.clip(out, 0.0, 1.0) * 255).astype(np.uint8)
-
-
-def _make_seamless_gray(img_gray, blend_px: int):
-    import cv2
-    bgr    = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2BGR)
-    result = _make_seamless(bgr, blend_px)
-    return cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -100,7 +134,7 @@ def _delit_albedo(albedo_bgr, sigma_pct: float = 0.10):
     return np.clip(delit, 0, 255).astype(np.uint8)
 
 
-def _generate_normal_gl(gray_f32, normal_strength: float = 4.0, blend_px: int = 64):
+def _generate_normal_gl(gray_f32, normal_strength: float = 4.0, blend_px: int = 0):
     """
     OpenGL format Normal map (Sobel, bilateral pre-filter).
 
@@ -129,122 +163,60 @@ def _generate_normal_gl(gray_f32, normal_strength: float = 4.0, blend_px: int = 
     normal_bgr = np.stack([nz * 0.5 + 0.5, ny * 0.5 + 0.5, nx * 0.5 + 0.5], axis=-1)
     normal_bgr = (np.clip(normal_bgr, 0.0, 1.0) * 255).astype(np.uint8)
 
-    return _make_seamless_normal(normal_bgr, blend_px)
+    return normal_bgr   # seamless tashqarida qo'llaniladi
 
 
-def _generate_height(gray_f32, blend_px: int = 64):
-    """
-    Grayscale Height / Displacement map.
-
-    Multi-scale yondashuv:
-      coarse (sigma=8) → yirik balandlik tuzilmalari (qoyalar, g'isht yo'llari)
-      medium (sigma=2) → o'rtacha bumps (tosh yuzasi, yog'och donalari)
-      fine   (raw)     → mayda detal (Sobel gradienti magnitudasi)
-
-    Natija: 0=past, 1=baland  (grayscale PNG uchun ideal)
-    """
+def _generate_height_raw(gray_f32) -> "np.ndarray":
+    """Height map — uint8 grayscale, seamless qo'llanilmagan."""
     import cv2
     import numpy as np
-
     coarse = cv2.GaussianBlur(gray_f32, (0, 0), sigmaX=8.0, sigmaY=8.0)
     medium = cv2.GaussianBlur(gray_f32, (0, 0), sigmaX=2.0, sigmaY=2.0)
-    fine   = gray_f32
-
-    # Weighted blend: coarse shakl, medium+fine detal
-    height = coarse * 0.25 + medium * 0.45 + fine * 0.30
-
-    # Normalize [0, 1]
+    height = coarse * 0.25 + medium * 0.45 + gray_f32 * 0.30
     h_min, h_max = height.min(), height.max()
     if h_max - h_min > 1e-6:
         height = (height - h_min) / (h_max - h_min)
-
-    height_u8 = (height * 255).astype(np.uint8)
-    return _make_seamless_gray(height_u8, blend_px)
+    return (height * 255).astype(np.uint8)
 
 
-def _generate_roughness(gray_f32, roughness_gamma: float = 1.2, blend_px: int = 64):
-    """
-    Roughness map (CLAHE lokal kontrast + gamma korreksiya).
-
-    Yorug' = silliq (low roughness), qorong'i = g'adir-budir (high roughness).
-    CLAHE: har bir maydonchada mustaqil kontrast → tafsilotlar aniq ajraladi.
-    """
+def _generate_roughness_raw(gray_f32, roughness_gamma: float = 1.2) -> "np.ndarray":
+    """Roughness map — uint8 grayscale, seamless qo'llanilmagan."""
     import cv2
     import numpy as np
-
     gray_u8  = (gray_f32 * 255).astype(np.uint8)
     clahe    = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray_u8).astype(np.float32) / 255.0
-
     roughness = 1.0 - enhanced
     roughness = np.power(np.clip(roughness, 0.0, 1.0), roughness_gamma)
-
-    # Full range normalizatsiya
     r_min, r_max = roughness.min(), roughness.max()
     if r_max - r_min > 1e-6:
         roughness = (roughness - r_min) / (r_max - r_min)
-
-    roughness_u8 = (roughness * 255).astype(np.uint8)
-    return _make_seamless_gray(roughness_u8, blend_px)
+    return (roughness * 255).astype(np.uint8)
 
 
-def _generate_metallic(albedo_bgr, blend_px: int = 64):
-    """
-    Metallic map (HSV-based heuristic).
-
-    Metall belgilari:
-      - Yuqori yorqinlik (value)
-      - Past rang to'yinganligi (saturation)
-      - Bir-tekis rang (past dispersion)
-
-    Formulasi: metallic ≈ value^0.8 × (1 - saturation)^2
-    Keyin kuchaytiriladi va smoothed.
-
-    Eslatma: Bu taxminiy heuristic. To'liq aniq metallic uchun
-    maxsus AI model yoki manual masking kerak.
-    """
+def _generate_metallic_raw(albedo_bgr) -> "np.ndarray":
+    """Metallic map — uint8 grayscale, seamless qo'llanilmagan."""
     import cv2
     import numpy as np
-
     hsv = cv2.cvtColor(albedo_bgr, cv2.COLOR_BGR2HSV)
-    s   = hsv[:, :, 1].astype(np.float32) / 255.0   # saturation
-    v   = hsv[:, :, 2].astype(np.float32) / 255.0   # value/brightness
-
-    # Metal: yorqin va desaturated
-    metallic = (v ** 0.8) * ((1.0 - s) ** 2)
-    metallic = np.clip(metallic * 1.3, 0.0, 1.0)
-
-    # Edge-aware smooth (metallar gradual transition beradi)
+    s   = hsv[:, :, 1].astype(np.float32) / 255.0
+    v   = hsv[:, :, 2].astype(np.float32) / 255.0
+    metallic = np.clip((v ** 0.8) * ((1.0 - s) ** 2) * 1.3, 0.0, 1.0)
     metallic_u8 = (metallic * 255).astype(np.uint8)
-    metallic_u8 = cv2.bilateralFilter(metallic_u8, d=9, sigmaColor=25, sigmaSpace=25)
-
-    return _make_seamless_gray(metallic_u8, blend_px)
+    return cv2.bilateralFilter(metallic_u8, d=9, sigmaColor=25, sigmaSpace=25)
 
 
-def _generate_ao(gray_f32, ao_blur_sigma: float = 4.0, blend_px: int = 64):
-    """
-    Ambient Occlusion (multi-scale Gaussian diff).
-
-    Uch miqyosda soya tahlili:
-      mayda (sigma*0.5)  → yaqin mikro-soyalar
-      o'rta (sigma)      → o'rtacha chuqurliklar
-      keng  (sigma*3)    → yirik botiqlar
-
-    Pastki chegara 0.45 — juda qorong'i AO dan saqlaydi.
-    """
+def _generate_ao_raw(gray_f32, ao_blur_sigma: float = 4.0) -> "np.ndarray":
+    """Ambient Occlusion — uint8 grayscale, seamless qo'llanilmagan."""
     import cv2
     import numpy as np
-
     b1 = cv2.GaussianBlur(gray_f32, (0, 0), sigmaX=ao_blur_sigma * 0.5)
     b2 = cv2.GaussianBlur(gray_f32, (0, 0), sigmaX=ao_blur_sigma)
     b3 = cv2.GaussianBlur(gray_f32, (0, 0), sigmaX=ao_blur_sigma * 3.0)
-
     ao = (gray_f32 - b1) * 0.4 + (gray_f32 - b2) * 0.4 + (gray_f32 - b3) * 0.2
     ao = cv2.normalize(ao, None, alpha=0.0, beta=1.0, norm_type=cv2.NORM_MINMAX)
     ao = np.clip(0.45 + ao * 0.55, 0.0, 1.0)
-
-    ao_u8 = (ao * 255).astype(np.uint8)
-    return _make_seamless_gray(ao_u8, blend_px)
+    return (ao * 255).astype(np.uint8)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -284,8 +256,9 @@ def process_all_maps(
     if albedo_raw is None:
         raise ValueError("Albedo rasm dekodlanmadi (noto'g'ri format yoki buzilgan bytes)")
 
-    # ── 2. Albedo seamless ────────────────────────────────────────────────────
-    albedo_seamless = _make_seamless(albedo_raw, seamless_blend_px)
+    # ── 2. Albedo seamless (Moisan FFT periodic decomposition) ───────────────
+    # Offset trick dan farqli: chekkalarda NOLGA teng farq → haqiqiy seamless
+    albedo_seamless = _make_seamless_fft(albedo_raw)
 
     # ── 3. De-lit albedo (baked lighting olib tashlash) ───────────────────────
     albedo_delit = _delit_albedo(albedo_seamless, sigma_pct=delit_sigma_pct)
@@ -293,12 +266,21 @@ def process_all_maps(
     # ── 4. Luminance — barcha xaritalar uchun asos ───────────────────────────
     gray_f32 = cv2.cvtColor(albedo_delit, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
 
-    # ── 5. Barcha xaritalarni generatsiya qilish ─────────────────────────────
-    normal_bgr   = _generate_normal_gl(gray_f32, normal_strength, seamless_blend_px)
-    height_u8    = _generate_height(gray_f32, seamless_blend_px)
-    roughness_u8 = _generate_roughness(gray_f32, roughness_gamma, seamless_blend_px)
-    metallic_u8  = _generate_metallic(albedo_delit, seamless_blend_px)
-    ao_u8        = _generate_ao(gray_f32, ao_blur_sigma, seamless_blend_px)
+    # ── 5. Barcha xaritalarni generatsiya qilish (FFT seamless) ──────────────
+    # Normal map: FFT seamless + re-normalizatsiya
+    normal_raw  = _generate_normal_gl(gray_f32, normal_strength, 0)   # blend_px=0 (FFT ishlatiladi)
+    normal_bgr  = _make_seamless_fft_normal(normal_raw)
+
+    # Grayscale xaritalar: FFT seamless
+    height_raw    = _generate_height_raw(gray_f32)
+    roughness_raw = _generate_roughness_raw(gray_f32, roughness_gamma)
+    metallic_raw  = _generate_metallic_raw(albedo_delit)
+    ao_raw        = _generate_ao_raw(gray_f32, ao_blur_sigma)
+
+    height_u8    = _make_seamless_fft_gray(height_raw)
+    roughness_u8 = _make_seamless_fft_gray(roughness_raw)
+    metallic_u8  = _make_seamless_fft_gray(metallic_raw)
+    ao_u8        = _make_seamless_fft_gray(ao_raw)
 
     # ── 6. JPEG encoding (95% sifat) ─────────────────────────────────────────
     params = [cv2.IMWRITE_JPEG_QUALITY, 95]

@@ -166,6 +166,223 @@ Categories must be one of: fabric, leather, wood, metal, plastic, glass, general
 Only include parts that are clearly visible. Maximum 6 parts. JSON only, no explanation."""
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  LLM Prompt Enhancement (text model)
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Vision modellar — matn uchun yaramaydi
+_VISION_MODEL_NAMES = ("llava", "bakllava", "moondream", "cogvlm", "minicpm-v")
+
+LLM_ENHANCE_SYSTEM = (
+    "You are a Stable Diffusion XL texture prompt specialist. "
+    "Convert the user's short material description into a detailed SDXL prompt "
+    "for seamless PBR texture generation. "
+    "Rules: output ONLY the prompt text, no explanation, no quotes. "
+    "Include material type, color, surface properties, and texture pattern. "
+    "Never mention furniture, objects, scenes, or rooms. "
+    "End with: seamless tileable texture, pbr albedo map, flat evenly lit, no shadows, 4k. "
+    "Maximum 80 words."
+)
+
+
+async def get_available_text_models() -> list[str]:
+    """Ollama dagi vision bo'lmagan text modellar ro'yxati."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{OLLAMA_URL}/api/tags")
+            data = r.json()
+            all_models = [m["name"] for m in data.get("models", [])]
+        return [
+            m for m in all_models
+            if not any(v in m.lower() for v in _VISION_MODEL_NAMES)
+        ]
+    except Exception:
+        return []
+
+
+async def enhance_prompt_with_llm(user_text: str) -> dict:
+    """
+    Foydalanuvchi qisqa matni → to'liq SDXL PBR texture prompt.
+
+    Returns:
+        {
+            "prompt":     str,
+            "model_used": str | None,
+            "success":    bool,
+            "fallback":   bool,   — True bo'lsa LLM ishlamadi, mahalliy fallback
+            "error":      str | None,
+        }
+    """
+    from services.prompt_builder import build_pbr_prompt_from_text
+
+    text_models = await get_available_text_models()
+
+    if not text_models:
+        logger.info("Text model topilmadi — build_pbr_prompt_from_text ishlatilmoqda")
+        result = build_pbr_prompt_from_text(user_text)
+        return {
+            "prompt":     result["prompt"],
+            "model_used": None,
+            "success":    True,
+            "fallback":   True,
+            "error":      None,
+        }
+
+    model = text_models[0]
+    logger.info(f"LLM enhance: '{model}' modeli ishlatilmoqda")
+
+    payload = {
+        "model":  model,
+        "prompt": f"{LLM_ENHANCE_SYSTEM}\n\nUser description: {user_text}\n\nSDXL prompt:",
+        "stream": False,
+        "options": {"temperature": 0.4, "num_predict": 200},
+    }
+
+    try:
+        timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(f"{OLLAMA_URL}/api/generate", json=payload)
+            r.raise_for_status()
+            data = r.json()
+
+        enhanced = data.get("response", "").strip().strip('"').strip()
+
+        if not enhanced:
+            raise ValueError("Model bo'sh javob qaytardi")
+
+        logger.info(f"LLM enhanced prompt: '{enhanced[:100]}...'")
+        return {
+            "prompt":     enhanced,
+            "model_used": model,
+            "success":    True,
+            "fallback":   False,
+            "error":      None,
+        }
+
+    except Exception as e:
+        logger.warning(f"LLM enhance xato ({model}): {e} — fallback ishlatilmoqda")
+        result = build_pbr_prompt_from_text(user_text)
+        return {
+            "prompt":     result["prompt"],
+            "model_used": None,
+            "success":    True,
+            "fallback":   True,
+            "error":      str(e),
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Chat (multi-turn conversation → PBR prompt)
+# ──────────────────────────────────────────────────────────────────────────────
+
+CHAT_SYSTEM_PROMPT = """You are PBRForge AI — a texture generation assistant.
+Help users describe the texture they need and generate an SDXL prompt for PBR texture creation.
+
+When you have enough information about the texture, include the final prompt in your response like this:
+PROMPT: [detailed sdxl prompt here]
+
+SDXL prompt rules:
+- Include: material type, color, surface finish, texture pattern, micro-details
+- End with: seamless tileable texture, pbr albedo map, flat evenly lit, no shadows, photorealistic, 4k
+- Never mention furniture, objects, rooms, or scenes
+- Maximum 80 words in the prompt
+
+Behavior:
+- Be brief and conversational (2-3 sentences)
+- Respond in the same language as the user (Uzbek or English)
+- Ask one short clarifying question if needed
+- Always include PROMPT: when you have enough info to generate
+- If user says yes/ha/ok/generate/generatsiya — confirm and include PROMPT:"""
+
+
+async def chat_with_llm(messages: list[dict]) -> dict:
+    """
+    Multi-turn LLM chat — texture tavsifidan PBR prompt yaratadi.
+
+    Args:
+        messages: [{"role": "user"|"assistant", "content": str}, ...]
+
+    Returns:
+        {
+            "reply":      str,         — LLM javobi
+            "prompt":     str | None,  — PROMPT: dan olingan SDXL prompt
+            "model_used": str | None,
+            "success":    bool,
+            "error":      str | None,
+        }
+    """
+    text_models = await get_available_text_models()
+
+    if not text_models:
+        logger.warning("Chat uchun text model topilmadi")
+        return {
+            "reply":      "Afsuski, Ollama da matn modeli o'rnatilmagan. "
+                          "`ollama pull llama3.2` buyrug'ini ishga tushiring.",
+            "prompt":     None,
+            "model_used": None,
+            "success":    False,
+            "error":      "No text model available",
+        }
+
+    model = text_models[0]
+    logger.info(f"Chat: '{model}' modeli ishlatilmoqda, {len(messages)} xabar")
+
+    payload = {
+        "model":  model,
+        "messages": [
+            {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+            *messages,
+        ],
+        "stream": False,
+        "options": {"temperature": 0.65, "num_predict": 400},
+    }
+
+    try:
+        timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(f"{OLLAMA_URL}/api/chat", json=payload)
+            r.raise_for_status()
+            data = r.json()
+
+        reply = data.get("message", {}).get("content", "").strip()
+
+        if not reply:
+            raise ValueError("Model bo'sh javob qaytardi")
+
+        # PROMPT: ni ajratib olish
+        extracted_prompt = None
+        if "PROMPT:" in reply:
+            parts = reply.split("PROMPT:", 1)
+            extracted_prompt = parts[1].strip().split("\n")[0].strip()
+            logger.info(f"Chat prompt ajratildi: '{extracted_prompt[:80]}...'")
+
+        return {
+            "reply":      reply,
+            "prompt":     extracted_prompt,
+            "model_used": model,
+            "success":    True,
+            "error":      None,
+        }
+
+    except httpx.TimeoutException:
+        return {
+            "reply":      "Javob kelmadi (timeout). Model yuklanyaptimi?",
+            "prompt":     None,
+            "model_used": model,
+            "success":    False,
+            "error":      "timeout",
+        }
+    except Exception as e:
+        logger.error(f"Chat xato: {e}", exc_info=True)
+        return {
+            "reply":      f"Xato: {e}",
+            "prompt":     None,
+            "model_used": None,
+            "success":    False,
+            "error":      str(e),
+        }
+
+
 async def analyze_furniture_parts(image_bytes: bytes) -> dict:
     """
     Mebel rasmini tahlil qilib qismlarini va materiallarini aniqlaydi.

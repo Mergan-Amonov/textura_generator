@@ -75,10 +75,59 @@ async def get_comfyui_upscale_models() -> list[str]:
 #  Referens rasm yuklash
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _prepare_texture_patch(image_bytes: bytes, target: int = 1024) -> bytes:
+    """
+    Furniture fotosidan tekstura patch ajratib oladi.
+
+    Muammo: foydalanuvchi mebel rasmi yuklaydi, lekin bizga
+    material yuzasining closeup patchasi kerak.
+
+    Yechim:
+      1. Eng ko'p teksturali (yuqori Laplacian variance) mintaqani topish
+      2. Markaziy zone dan square crop
+      3. target × target ga resize
+    """
+    import cv2
+    import numpy as np
+
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return image_bytes
+
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Eng teksturali mintaqani topish (sliding window, Laplacian variance)
+    step     = max(1, min(h, w) // 12)
+    win_size = min(h, w) // 3
+    best_var  = -1.0
+    best_y, best_x = (h - win_size) // 2, (w - win_size) // 2
+
+    for y in range(0, h - win_size, step):
+        for x in range(0, w - win_size, step):
+            patch = gray[y:y + win_size, x:x + win_size]
+            var   = cv2.Laplacian(patch, cv2.CV_64F).var()
+            if var > best_var:
+                best_var = var
+                best_y, best_x = y, x
+
+    crop = img[best_y:best_y + win_size, best_x:best_x + win_size]
+    resized = cv2.resize(crop, (target, target), interpolation=cv2.INTER_LANCZOS4)
+
+    _, buf = cv2.imencode(".png", resized)
+    logger.info(f"Texture patch ajratildi: {win_size}×{win_size} → {target}×{target} (var={best_var:.0f})")
+    return bytes(buf)
+
+
 async def upload_image_to_comfyui(
     image_bytes: bytes,
     filename: str = "pbrforge_ref.png",
+    prepare_patch: bool = True,
 ) -> str:
+    if prepare_patch:
+        image_bytes = _prepare_texture_patch(image_bytes)
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         files = {"image": (filename, image_bytes, "image/png")}
         r = await client.post(f"{COMFYUI_URL}/upload/image", files=files)
@@ -256,7 +305,7 @@ def build_img2img_4k_workflow(
     prompt: str,
     image_filename: str,
     output_resolution: int = OUTPUT_RESOLUTION,
-    denoise: float = 0.65,
+    denoise: float = 0.82,
     seed: int = -1,
     steps: int = DEFAULT_STEPS,
     cfg: float = DEFAULT_CFG,
